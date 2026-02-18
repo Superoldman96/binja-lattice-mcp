@@ -100,17 +100,40 @@ On Windows, use backslashes:
 
 The following tools are available through the MCP server:
 
-- `get_all_function_names`: Get a list of all function names in the binary
-- `get_binary_info`: Get information about the binary being analyzed
-- `update_function_name`: Update the name of a function
-- `update_variable_name`: Change variable name within function to specified name
-- `get_global_variable_data`: Get data from global variable
-- `add_comment_to_address`: Add a comment to a specific address
-- `add_comment_to_function`: Add a comment to a function
-- `get_function_disassembly`: Get disassembly for a function
-- `get_function_pseudocode`: Get pseudocode for a function
-- `get_function_variables`: Get variables and parameters for a function
-- `get_cross_references_to_function`: Get cross references to a function
+#### Binary Information
+- `get_binary_info`: Get metadata about the binary (filename, architecture, entry point, segments, sections, function count)
+- `get_all_function_names`: List all function names in the binary
+- `get_strings`: Get strings with optional min_length and substring filter
+- `get_imports`: List imported functions with addresses and source libraries
+- `get_exports`: List exported functions with addresses
+- `get_analysis_progress`: Get Binary Ninja analysis status and progress percentage
+
+#### Function Analysis
+- `get_function_disassembly`: Get assembly instructions for function by name
+- `get_function_pseudocode`: Get decompiled C-like pseudocode for function
+- `get_function_variables`: Get parameters, local variables, and global variables
+- `get_cross_references_to_function`: List functions that call the specified function
+- `get_call_graph`: Get callers and callees of function with configurable depth
+- `get_global_variable_data`: Read data from global variable referenced in function
+
+#### Data Access
+- `get_data_at_address`: Read bytes at address with optional type interpretation
+- `search_bytes`: Search for hex byte pattern with wildcard support (e.g., '48 89 ?? 24')
+
+#### Type Management
+- `get_types`: List defined types (structs, enums, typedefs) with optional filter
+- `create_struct`: Create a new struct type with JSON member definitions
+- `update_struct`: Update an existing struct type
+
+#### Annotations
+- `update_function_name`: Rename a function
+- `update_variable_name`: Rename a variable in a function
+- `set_variable_type`: Set variable type annotation (C-style like 'uint32_t')
+- `set_function_signature`: Set function prototype (C-style like 'int foo(char* arg1)')
+- `add_comment_to_address`: Add comment at address
+- `add_comment_to_function`: Add comment to function
+- `create_tag`: Create tag at address with type and optional description
+- `get_tags`: List all tags with optional type filter
 
 ### Client Library Usage
 

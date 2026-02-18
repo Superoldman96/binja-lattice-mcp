@@ -18,15 +18,42 @@ BinjaLattice is a secure communication protocol for Binary Ninja that enables in
 
 ## Installation
 
-1. Copy `lattice_server_plugin.py` to your Binary Ninja plugins directory:
+### Windows (Automated)
+
+Run the PowerShell installer for a one-shot setup:
+
+```powershell
+.\scripts\install_windows.ps1
+```
+
+This will:
+- Install the plugin to `%APPDATA%\Binary Ninja\plugins\`
+- Create a Python virtual environment (`.venv`)
+- Install all dependencies
+- Output a ready-to-use MCP configuration
+
+### Manual Installation (All Platforms)
+
+1. Copy `plugin/lattice_server_plugin.py` to your Binary Ninja plugins directory:
    - Linux: `~/.binaryninja/plugins/`
    - macOS: `~/Library/Application Support/Binary Ninja/plugins/`
    - Windows: `%APPDATA%\Binary Ninja\plugins\`
 
-2. Create a virtual environment `pip -m venv venv-test` (or your preferred dependency manager)
+2. Create a virtual environment:
+   ```bash
+   python -m venv .venv
+   ```
 
-3. Activate your virtual environment and install required Python dependencies:
-   - Install with: `pip install -r requirements.txt` (or your preferred method)
+3. Activate and install dependencies:
+   ```bash
+   # Linux/macOS
+   source .venv/bin/activate
+   
+   # Windows
+   .venv\Scripts\activate
+   
+   pip install -r requirements.txt
+   ```
 
 ## Usage
 
@@ -37,13 +64,13 @@ BinjaLattice is a secure communication protocol for Binary Ninja that enables in
 3. The server will start and display the API key in the log console
 4. Set the API key as the `BNJLAT` environment variable in your MCP configuration
 
-Example MCP configuration (`mcp.json`) from Cursor:
+Example MCP configuration (`mcp.json`):
 ```json
 {
     "mcpServers": {
       "binja-lattice-mcp": {
-        "command": "/path/to/venv/bin/python",
-        "args": ["/path/to/mcp_server.py"],
+        "command": "/path/to/BinjaLattice/.venv/bin/python",
+        "args": ["/path/to/BinjaLattice/mcp_server.py"],
         "env": {
             "BNJLAT": "your_api_key_here"
         }
@@ -51,6 +78,23 @@ Example MCP configuration (`mcp.json`) from Cursor:
     }
 }
 ```
+
+On Windows, use backslashes:
+```json
+{
+    "mcpServers": {
+      "binja-lattice-mcp": {
+        "command": "C:\\path\\to\\BinjaLattice\\.venv\\Scripts\\python.exe",
+        "args": ["C:\\path\\to\\BinjaLattice\\mcp_server.py"],
+        "env": {
+            "BNJLAT": "your_api_key_here"
+        }
+      }
+    }
+}
+```
+
+> **Tip**: The Windows installer outputs a ready-to-paste configuration with the correct paths.
 
 ### Available MCP Tools
 

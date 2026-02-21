@@ -7,7 +7,7 @@ from binaryninja.plugin import PluginCommand
 from binaryninja.log import Logger
 from typing import Optional, Dict, Any, List, Tuple
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, unquote
 import json
 import os
 import secrets
@@ -168,11 +168,17 @@ class LatticeRequestHandler(BaseHTTPRequestHandler):
         
         if path == '/auth':
             self._handle_auth(data)
+        elif path == '/search/bytes':
+            self._require_auth(self._handle_search_bytes)(data)
+        elif path == '/types/struct':
+            self._require_auth(self._handle_create_struct)(data)
         elif path.startswith('/comments/'):
             self._require_auth(self._handle_add_comment_to_address)(data)
         elif path.startswith('/functions/'):
             logger.log_info(f"Handling add comment to function request: {data}")
             self._require_auth(self._handle_add_comment_to_function)(data)
+        elif path == '/tags':
+            self._require_auth(self._handle_create_tag)(data)
         else:
             self._send_response({'status': 'error', 'message': 'Invalid endpoint'}, 404)
     
@@ -193,6 +199,12 @@ class LatticeRequestHandler(BaseHTTPRequestHandler):
             self._require_auth(self._handle_update_function_name)(data)
         elif path.startswith('/variables/') and path.endswith('/name'):
             self._require_auth(self._handle_update_variable_name)(data)
+        elif path.startswith('/types/struct/'):
+            self._require_auth(self._handle_update_struct)(data)
+        elif path.startswith('/functions/') and '/variables/' in path and path.endswith('/type'):
+            self._require_auth(self._handle_set_variable_type)(data)
+        elif path.startswith('/functions/') and path.endswith('/signature'):
+            self._require_auth(self._handle_set_function_signature)(data)
         else:
             self._send_response({'status': 'error', 'message': 'Invalid endpoint'}, 404)
     
@@ -203,6 +215,12 @@ class LatticeRequestHandler(BaseHTTPRequestHandler):
         
         if path == '/binary/info':
             self._require_auth(self._handle_get_binary_info)()
+        elif path == '/strings':
+            self._require_auth(self._handle_get_strings)()
+        elif path == '/imports':
+            self._require_auth(self._handle_get_imports)()
+        elif path == '/exports':
+            self._require_auth(self._handle_get_exports)()
         elif path == '/functions':
             self._require_auth(self._handle_get_all_function_names)()
         elif path.startswith('/functions/'):
@@ -214,12 +232,22 @@ class LatticeRequestHandler(BaseHTTPRequestHandler):
                 self._require_auth(self._handle_get_function_pseudocode)()
             elif path.endswith('/variables'):
                 self._require_auth(self._handle_get_function_variables)()
+            elif path.endswith('/callgraph'):
+                self._require_auth(self._handle_get_call_graph)()
             else:
                 self._require_auth(self._handle_get_function_context_by_address)()
         elif path.startswith('/global_variable_data'):
             self._require_auth(self._handle_get_global_variable_data)()
         elif path.startswith('/cross-references/'):
             self._require_auth(self._handle_get_cross_references_to_function)()
+        elif path.startswith('/data/'):
+            self._require_auth(self._handle_get_data_at_address)()
+        elif path == '/types':
+            self._require_auth(self._handle_get_types)()
+        elif path == '/tags':
+            self._require_auth(self._handle_get_tags)()
+        elif path == '/analysis/progress':
+            self._require_auth(self._handle_get_analysis_progress)()
         else:
             self._send_response({'status': 'error', 'message': 'Invalid endpoint'}, 404)
     
@@ -278,6 +306,631 @@ class LatticeRequestHandler(BaseHTTPRequestHandler):
             logger.log_error(f"Error getting binary info: {e}")
             logger.log_error("Stack trace: %s" % traceback.format_exc())
             self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_get_strings(self):
+        """Handle requests for strings in the binary with optional filtering"""
+        try:
+            parsed_path = urlparse(self.path)
+            query_params = parse_qs(parsed_path.query)
+            
+            # Get filter parameters
+            min_length = int(query_params.get('min_length', ['4'])[0])
+            filter_str = query_params.get('filter', [None])[0]
+            
+            strings_list = []
+            for string_ref in self.protocol.bv.get_strings():
+                # Apply minimum length filter
+                if string_ref.length < min_length:
+                    continue
+                
+                # Apply substring filter (case-insensitive)
+                if filter_str and filter_str.lower() not in string_ref.value.lower():
+                    continue
+                
+                strings_list.append({
+                    'address': string_ref.start,
+                    'value': string_ref.value,
+                    'length': string_ref.length
+                })
+            
+            self._send_response({
+                'status': 'success',
+                'strings': strings_list
+            })
+            
+        except Exception as e:
+            logger.log_error(f"Error getting strings: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_get_imports(self):
+        """Handle requests for imported functions in the binary"""
+        try:
+            imports_list = []
+            for sym in self.protocol.bv.get_symbols_of_type(SymbolType.ImportedFunctionSymbol):
+                # Convert NameSpace to string for JSON serialization
+                library = str(sym.namespace) if sym.namespace else ''
+                imports_list.append({
+                    'name': sym.name,
+                    'address': sym.address,
+                    'library': library
+                })
+
+            self._send_response({
+                'status': 'success',
+                'imports': imports_list
+            })
+
+        except Exception as e:
+            logger.log_error(f"Error getting imports: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_get_exports(self):
+        """Handle requests for exported functions in the binary"""
+        try:
+            exports_list = []
+            for sym in self.protocol.bv.get_symbols_of_type(SymbolType.FunctionSymbol):
+                if sym.binding == SymbolBinding.GlobalBinding:
+                    exports_list.append({
+                        'name': sym.name,
+                        'address': sym.address
+                    })
+
+            self._send_response({
+                'status': 'success',
+                'exports': exports_list
+            })
+
+        except Exception as e:
+            logger.log_error(f"Error getting exports: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_get_data_at_address(self):
+        """Handle requests for reading data at a specific address"""
+        try:
+            parsed_path = urlparse(self.path)
+            query_params = parse_qs(parsed_path.query)
+
+            # Extract address from path: /data/{address}
+            path_parts = parsed_path.path.split('/')
+            if len(path_parts) < 3:
+                self._send_response({'status': 'error', 'message': 'Address required'}, 400)
+                return
+
+            # Parse address (supports hex with 0x prefix or decimal)
+            addr_str = path_parts[2]
+            try:
+                if addr_str.startswith('0x') or addr_str.startswith('0X'):
+                    address = int(addr_str, 16)
+                else:
+                    address = int(addr_str)
+            except ValueError:
+                self._send_response({'status': 'error', 'message': f'Invalid address format: {addr_str}'}, 400)
+                return
+
+            # Get query parameters
+            length = int(query_params.get('length', ['16'])[0])
+            type_name = query_params.get('type', [None])[0]
+
+            # Check if address is readable
+            if not self.protocol.bv.is_valid_offset(address):
+                self._send_response({
+                    'status': 'error',
+                    'message': f'Address 0x{address:x} is not readable'
+                }, 400)
+                return
+
+            # Read raw bytes
+            data = self.protocol.bv.read(address, length)
+            if data is None:
+                self._send_response({
+                    'status': 'error',
+                    'message': f'Address 0x{address:x} is not readable'
+                }, 400)
+                return
+
+            # Check if we got less data than requested
+            actual_length = len(data)
+            truncated = actual_length < length
+
+            response = {
+                'status': 'success',
+                'address': address,
+                'hex': data.hex(),
+                'length': actual_length
+            }
+
+            if truncated:
+                response['warning'] = f'Only {actual_length} bytes available (requested {length})'
+                response['truncated'] = True
+
+            # If type is specified, try to interpret the data
+            if type_name:
+                try:
+                    type_obj, _ = self.protocol.bv.parse_type_string(type_name)
+                    if type_obj:
+                        # Get typed interpretation
+                        data_var = self.protocol.bv.get_data_var_at(address)
+                        if data_var:
+                            response['typed_value'] = str(data_var.value)
+                        else:
+                            # Try to interpret based on common types
+                            response['type'] = type_name
+                            response['type_size'] = type_obj.width
+                except Exception as type_err:
+                    response['type_error'] = f'Could not interpret as {type_name}: {str(type_err)}'
+
+            self._send_response(response)
+
+        except Exception as e:
+            logger.log_error(f"Error reading data at address: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_search_bytes(self, data):
+        """Handle requests for searching byte patterns in the binary
+
+        Supports hex patterns with optional ?? wildcards for any byte.
+        Example patterns: "48 89 5c 24", "48 ?? 5c ??", "488b"
+        """
+        try:
+            pattern = data.get('pattern', '')
+            max_results = data.get('max_results', 100)
+
+            if not pattern:
+                self._send_response({'status': 'error', 'message': 'Pattern required'}, 400)
+                return
+
+            # Parse the hex pattern, handling spaces and wildcards
+            pattern_clean = pattern.replace(' ', '').upper()
+
+            # Validate pattern length (must be even number of hex chars)
+            if len(pattern_clean) % 2 != 0:
+                self._send_response({
+                    'status': 'error',
+                    'message': 'Invalid pattern: must have even number of hex characters'
+                }, 400)
+                return
+
+            # Parse pattern into bytes and mask
+            pattern_bytes = []
+            mask_bytes = []
+            has_wildcards = False
+
+            for i in range(0, len(pattern_clean), 2):
+                byte_str = pattern_clean[i:i+2]
+                if byte_str == '??':
+                    pattern_bytes.append(0x00)
+                    mask_bytes.append(0x00)  # 0 mask = don't care
+                    has_wildcards = True
+                else:
+                    try:
+                        byte_val = int(byte_str, 16)
+                        pattern_bytes.append(byte_val)
+                        mask_bytes.append(0xFF)  # FF mask = must match
+                    except ValueError:
+                        self._send_response({
+                            'status': 'error',
+                            'message': f'Invalid hex byte: {byte_str}'
+                        }, 400)
+                        return
+
+            pattern_len = len(pattern_bytes)
+            results = []
+            truncated = False
+
+            if not has_wildcards:
+                # Use Binary Ninja's optimized search for exact patterns
+                search_bytes = bytes(pattern_bytes)
+                bv = self.protocol.bv
+
+                try:
+                    for match in bv.find_all_data(bv.start, bv.end, search_bytes):
+                        # find_all_data returns tuples of (address, DataBuffer) or just addresses
+                        if isinstance(match, tuple):
+                            addr = match[0]  # First element is the address
+                        elif isinstance(match, int):
+                            addr = match
+                        elif hasattr(match, 'start'):
+                            addr = match.start
+                        else:
+                            # Skip if we can't determine the address
+                            continue
+                        results.append({'address': int(addr)})
+                        if len(results) >= max_results:
+                            truncated = True
+                            break
+                except Exception as search_err:
+                    logger.log_error(f"Error in find_all_data: {search_err}")
+                    # Fall back to manual search
+                    has_wildcards = True
+            else:
+                # Manual search with masking for wildcard patterns
+                bv = self.protocol.bv
+
+                # Search through all segments
+                for segment in bv.segments:
+                    if len(results) >= max_results:
+                        truncated = True
+                        break
+
+                    seg_start = segment.start
+                    seg_end = segment.end
+                    seg_len = seg_end - seg_start
+
+                    # Read segment data
+                    seg_data = bv.read(seg_start, seg_len)
+                    if seg_data is None:
+                        continue
+
+                    # Search within segment
+                    for offset in range(len(seg_data) - pattern_len + 1):
+                        if len(results) >= max_results:
+                            truncated = True
+                            break
+
+                        match = True
+                        for j in range(pattern_len):
+                            if mask_bytes[j] != 0:  # Only check non-wildcard bytes
+                                if seg_data[offset + j] != pattern_bytes[j]:
+                                    match = False
+                                    break
+
+                        if match:
+                            results.append({'address': seg_start + offset})
+
+            # Sort results by address ascending
+            results.sort(key=lambda x: x['address'])
+
+            response = {
+                'status': 'success',
+                'pattern': pattern,
+                'results': results,
+                'count': len(results)
+            }
+
+            if truncated:
+                response['truncated'] = True
+                response['message'] = f'Results limited to {max_results}'
+
+            self._send_response(response)
+
+        except Exception as e:
+            logger.log_error(f"Error searching bytes: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_get_types(self):
+        """Handle requests for defined types in the binary with optional filtering"""
+        try:
+            parsed_path = urlparse(self.path)
+            query_params = parse_qs(parsed_path.query)
+            
+            # Get filter parameter
+            filter_str = query_params.get('filter', [None])[0]
+            
+            types_list = []
+            for type_name, type_obj in self.protocol.bv.types.items():
+                try:
+                    # Convert QualifiedName to string
+                    name_str = str(type_name)
+                    
+                    # Apply name filter (case-insensitive)
+                    if filter_str and filter_str.lower() not in name_str.lower():
+                        continue
+                    
+                    type_info = {
+                        'name': name_str,
+                        'size': type_obj.width if hasattr(type_obj, 'width') else 0
+                    }
+                    
+                    # Determine kind based on type_class
+                    type_class = type_obj.type_class if hasattr(type_obj, 'type_class') else None
+                    
+                    if type_class == TypeClass.StructureTypeClass:
+                        type_info['kind'] = 'struct'
+                        members = []
+                        # Access structure members safely
+                        try:
+                            struct = type_obj.structure
+                            if struct and hasattr(struct, 'members'):
+                                for m in struct.members:
+                                    members.append({
+                                        'name': m.name,
+                                        'type': str(m.type),
+                                        'offset': m.offset
+                                    })
+                        except Exception:
+                            pass
+                        type_info['members'] = members
+                    elif type_class == TypeClass.EnumerationTypeClass:
+                        type_info['kind'] = 'enum'
+                        members = []
+                        try:
+                            enum = type_obj.enumeration
+                            if enum and hasattr(enum, 'members'):
+                                for m in enum.members:
+                                    members.append({
+                                        'name': m.name,
+                                        'value': m.value
+                                    })
+                        except Exception:
+                            pass
+                        type_info['members'] = members
+                    elif type_class == TypeClass.NamedTypeReferenceClass:
+                        type_info['kind'] = 'typedef'
+                    elif type_class == TypeClass.FunctionTypeClass:
+                        type_info['kind'] = 'function'
+                    elif type_class == TypeClass.PointerTypeClass:
+                        type_info['kind'] = 'pointer'
+                    elif type_class == TypeClass.ArrayTypeClass:
+                        type_info['kind'] = 'array'
+                    else:
+                        type_info['kind'] = str(type_class).split('.')[-1].replace('TypeClass', '').lower() if type_class else 'unknown'
+                    
+                    types_list.append(type_info)
+                except Exception as inner_e:
+                    # Skip types that cause errors
+                    logger.log_warn(f"Skipping type {type_name}: {inner_e}")
+                    continue
+            
+            self._send_response({
+                'status': 'success',
+                'types': types_list
+            })
+            
+        except Exception as e:
+            logger.log_error(f"Error getting types: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_create_struct(self, data):
+        """Handle requests to create a new structure type
+
+        Expected JSON body:
+        {
+            "name": "MyStruct",
+            "members": [
+                {"name": "field1", "type": "uint32_t"},
+                {"name": "field2", "type": "char*", "count": 1}
+            ],
+            "overwrite": false  # optional, default false
+        }
+        """
+        try:
+            name = data.get('name')
+            members = data.get('members', [])
+            overwrite = data.get('overwrite', False)
+
+            if not name:
+                self._send_response({'status': 'error', 'message': 'Structure name is required'}, 400)
+                return
+
+            if not members:
+                self._send_response({'status': 'error', 'message': 'Structure must have at least one member'}, 400)
+                return
+
+            bv = self.protocol.bv
+
+            # Check if structure already exists
+            existing_type = None
+            for type_name, type_obj in bv.types.items():
+                if str(type_name) == name:
+                    existing_type = type_obj
+                    break
+
+            if existing_type and not overwrite:
+                self._send_response({
+                    'status': 'error',
+                    'message': f"Structure '{name}' already exists. Use overwrite=true to replace."
+                }, 409)
+                return
+
+            # Validate member types and build structure
+            struct_builder = StructureBuilder.create()
+
+            for member in members:
+                member_name = member.get('name')
+                member_type_str = member.get('type')
+                member_count = member.get('count', 1)
+
+                if not member_name or not member_type_str:
+                    self._send_response({
+                        'status': 'error',
+                        'message': 'Each member must have a name and type'
+                    }, 400)
+                    return
+
+                # Parse the type string
+                try:
+                    parsed_type, _ = bv.parse_type_string(member_type_str)
+                except Exception as e:
+                    self._send_response({
+                        'status': 'error',
+                        'message': f"Member type '{member_type_str}' does not exist or is invalid: {str(e)}"
+                    }, 400)
+                    return
+
+                # Handle array types
+                if member_count > 1:
+                    parsed_type = Type.array(parsed_type, member_count)
+
+                struct_builder.append(parsed_type, member_name)
+
+            # Define the structure type
+            bv.define_user_type(name, struct_builder.immutable_copy())
+
+            # Retrieve the created structure to return its info
+            # Use types dictionary to get the actual type object
+            created_type = None
+            for type_name, type_obj in bv.types.items():
+                if str(type_name) == name:
+                    created_type = type_obj
+                    break
+
+            if created_type:
+                result_members = []
+                try:
+                    # Check if it's a structure type and get members
+                    if hasattr(created_type, 'type_class') and created_type.type_class == TypeClass.StructureTypeClass:
+                        struct = created_type.structure
+                        if struct and hasattr(struct, 'members'):
+                            for m in struct.members:
+                                result_members.append({
+                                    'name': m.name,
+                                    'type': str(m.type),
+                                    'offset': m.offset
+                                })
+                except Exception as member_err:
+                    logger.log_warn(f"Could not get structure members: {member_err}")
+
+                self._send_response({
+                    'status': 'success',
+                    'message': f"Structure '{name}' created successfully",
+                    'structure': {
+                        'name': name,
+                        'size': created_type.width if hasattr(created_type, 'width') else 0,
+                        'members': result_members
+                    }
+                })
+            else:
+                self._send_response({
+                    'status': 'success',
+                    'message': f"Structure '{name}' created successfully"
+                })
+
+        except Exception as e:
+            logger.log_error(f"Error creating structure: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_update_struct(self, data):
+        """Handle requests to update an existing structure type
+
+        Expected JSON body:
+        {
+            "members": [
+                {"name": "field1", "type": "uint32_t"},
+                {"name": "field2", "type": "char*", "count": 1}
+            ]
+        }
+
+        The structure name is extracted from the URL path.
+        """
+        try:
+            # Extract structure name from URL path
+            parsed_path = urlparse(self.path)
+            path = parsed_path.path
+            # Path format: /types/struct/{name}
+            path_parts = path.split('/')
+            if len(path_parts) < 4:
+                self._send_response({'status': 'error', 'message': 'Invalid path format'}, 400)
+                return
+
+            name = path_parts[3]  # /types/struct/{name}
+            members = data.get('members', [])
+
+            if not members:
+                self._send_response({'status': 'error', 'message': 'Structure must have at least one member'}, 400)
+                return
+
+            bv = self.protocol.bv
+
+            # Check if structure exists
+            existing_type = None
+            for type_name, type_obj in bv.types.items():
+                if str(type_name) == name:
+                    existing_type = type_obj
+                    break
+
+            if not existing_type:
+                self._send_response({
+                    'status': 'error',
+                    'message': f"Structure '{name}' does not exist"
+                }, 404)
+                return
+
+            # Validate member types and build new structure
+            struct_builder = StructureBuilder.create()
+
+            for member in members:
+                member_name = member.get('name')
+                member_type_str = member.get('type')
+                member_count = member.get('count', 1)
+
+                if not member_name or not member_type_str:
+                    self._send_response({
+                        'status': 'error',
+                        'message': 'Each member must have a name and type'
+                    }, 400)
+                    return
+
+                # Parse the type string
+                try:
+                    parsed_type, _ = bv.parse_type_string(member_type_str)
+                except Exception as e:
+                    self._send_response({
+                        'status': 'error',
+                        'message': f"Member type '{member_type_str}' does not exist or is invalid: {str(e)}"
+                    }, 400)
+                    return
+
+                # Handle array types
+                if member_count > 1:
+                    parsed_type = Type.array(parsed_type, member_count)
+
+                struct_builder.append(parsed_type, member_name)
+
+            # Update the structure type (define_user_type will replace existing)
+            bv.define_user_type(name, struct_builder.immutable_copy())
+
+            # Retrieve the updated structure to return its info
+            # Use types dictionary to get the actual type object
+            updated_type = None
+            for type_name, type_obj in bv.types.items():
+                if str(type_name) == name:
+                    updated_type = type_obj
+                    break
+
+            if updated_type:
+                result_members = []
+                try:
+                    # Check if it's a structure type and get members
+                    if hasattr(updated_type, 'type_class') and updated_type.type_class == TypeClass.StructureTypeClass:
+                        struct = updated_type.structure
+                        if struct and hasattr(struct, 'members'):
+                            for m in struct.members:
+                                result_members.append({
+                                    'name': m.name,
+                                    'type': str(m.type),
+                                    'offset': m.offset
+                                })
+                except Exception as member_err:
+                    logger.log_warn(f"Could not get structure members: {member_err}")
+
+                self._send_response({
+                    'status': 'success',
+                    'message': f"Structure '{name}' updated successfully",
+                    'structure': {
+                        'name': name,
+                        'size': updated_type.width if hasattr(updated_type, 'width') else 0,
+                        'members': result_members
+                    }
+                })
+            else:
+                self._send_response({
+                    'status': 'success',
+                    'message': f"Structure '{name}' updated successfully"
+                })
+
+        except Exception as e:
+            logger.log_error(f"Error updating structure: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+
 
     def _get_function_context(self, address: int) -> Dict[str, Any]:
         res = self.protocol.bv.get_functions_containing(address)
@@ -433,6 +1086,235 @@ class LatticeRequestHandler(BaseHTTPRequestHandler):
             logger.log_error("Stack trace: %s" % traceback.format_exc())
             self._send_response({'status': 'error', 'message': str(e)}, 500)
 
+    def _handle_set_variable_type(self, data):
+        """Handle requests to set a variable's type annotation
+        
+        Endpoint: PUT /functions/{name}/variables/{var}/type
+        Expected JSON body:
+        {
+            "type": "uint32_t"  # C-style type string
+        }
+        """
+        try:
+            if not data or 'type' not in data:
+                self._send_response({'status': 'error', 'message': 'Type is required'}, 400)
+                return
+            
+            type_name = data['type']
+            
+            # Parse path: /functions/{func_name}/variables/{var_name}/type
+            path_parts = self.path.split('/')
+            func_name = path_parts[2]
+            var_name = path_parts[4]
+            
+            func = self._get_function_by_name(func_name)
+            if not func:
+                self._send_response({'status': 'error', 'message': f"Function '{func_name}' not found"}, 404)
+                return
+            
+            bv = self.protocol.bv
+            
+            # Parse and validate the type string
+            try:
+                parsed_type, _ = bv.parse_type_string(type_name)
+            except Exception as e:
+                self._send_response({
+                    'status': 'error',
+                    'message': f"Type '{type_name}' not found or is invalid: {str(e)}"
+                }, 400)
+                return
+            
+            # Find the variable in the function
+            target_var = None
+            for var in func.vars:
+                if var.name == var_name:
+                    target_var = var
+                    break
+            
+            if not target_var:
+                self._send_response({
+                    'status': 'error',
+                    'message': f"Variable '{var_name}' not found in function '{func_name}'"
+                }, 404)
+                return
+            
+            old_type = str(target_var.type)
+            
+            # Set the variable type using create_user_var
+            func.create_user_var(target_var, parsed_type, target_var.name)
+            
+            self._send_response({
+                'status': 'success',
+                'message': f"Variable '{var_name}' type updated from '{old_type}' to '{type_name}'",
+                'variable': {
+                    'name': var_name,
+                    'old_type': old_type,
+                    'new_type': type_name,
+                    'function': func_name
+                }
+            })
+            
+        except Exception as e:
+            logger.log_error(f"Error setting variable type: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_set_function_signature(self, data):
+        """Handle requests to update a function's signature/prototype
+        
+        Endpoint: PUT /functions/{name}/signature
+        Expected JSON body:
+        {
+            "signature": "int foo(char* arg1, int arg2)"  # C-style function signature
+        }
+        """
+        try:
+            if not data or 'signature' not in data:
+                self._send_response({'status': 'error', 'message': 'Signature is required'}, 400)
+                return
+            
+            signature = data['signature']
+            
+            # Parse path: /functions/{func_name}/signature
+            path_parts = self.path.split('/')
+            func_name = path_parts[2]
+            
+            func = self._get_function_by_name(func_name)
+            if not func:
+                self._send_response({'status': 'error', 'message': f"Function '{func_name}' not found"}, 404)
+                return
+            
+            bv = self.protocol.bv
+            old_signature = str(func.type)
+            
+            # Parse the C-style signature using Binary Ninja's type parser
+            try:
+                parsed_type, _ = bv.parse_type_string(signature)
+            except Exception as e:
+                self._send_response({
+                    'status': 'error',
+                    'message': f"Failed to parse signature '{signature}': {str(e)}"
+                }, 400)
+                return
+            
+            # Verify the parsed type is a function type
+            if not hasattr(parsed_type, 'parameters'):
+                self._send_response({
+                    'status': 'error',
+                    'message': f"Signature '{signature}' does not represent a function type"
+                }, 400)
+                return
+            
+            # Set the function's type to the parsed signature
+            func.type = parsed_type
+            
+            self._send_response({
+                'status': 'success',
+                'message': f"Function '{func_name}' signature updated",
+                'function': {
+                    'name': func_name,
+                    'old_signature': old_signature,
+                    'new_signature': str(func.type)
+                }
+            })
+            
+        except Exception as e:
+            logger.log_error(f"Error setting function signature: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _get_callees(self, func: binaryninja.function.Function, depth: int, visited: set) -> List[Dict[str, Any]]:
+        """Get functions called by func, up to depth levels"""
+        if depth == 0 or func.start in visited:
+            return []
+        visited.add(func.start)
+        callees = []
+        for site in func.call_sites:
+            # Get the target address from the call site
+            target_addr = None
+            # Try to get the target from MLIL if available
+            if hasattr(site, 'mlil') and site.mlil:
+                mlil = site.mlil
+                if hasattr(mlil, 'dest') and hasattr(mlil.dest, 'constant'):
+                    target_addr = mlil.dest.constant
+
+            # Fallback: try to get function at the call site address
+            if target_addr is None:
+                # Get the callee from the call site's referenced address
+                for ref in self.protocol.bv.get_callees(site.address):
+                    target_addr = ref
+                    break
+
+            if target_addr is not None:
+                target = self.protocol.bv.get_function_at(target_addr)
+                if target and target.start not in visited:
+                    callees.append({
+                        'name': target.name,
+                        'address': target.start,
+                        'callees': self._get_callees(target, depth - 1, visited.copy())
+                    })
+        return callees
+
+    def _get_callers(self, func: binaryninja.function.Function, depth: int, visited: set) -> List[Dict[str, Any]]:
+        """Get functions that call func, up to depth levels"""
+        if depth == 0 or func.start in visited:
+            return []
+        visited.add(func.start)
+        callers = []
+        for ref in self.protocol.bv.get_code_refs(func.start):
+            caller_funcs = self.protocol.bv.get_functions_containing(ref.address)
+            if caller_funcs:
+                caller = caller_funcs[0]
+                if caller.start not in visited:
+                    callers.append({
+                        'name': caller.name,
+                        'address': caller.start,
+                        'callers': self._get_callers(caller, depth - 1, visited.copy())
+                    })
+        return callers
+
+    def _handle_get_call_graph(self):
+        """Handle requests for call graph of a function"""
+        try:
+            parsed_path = urlparse(self.path)
+            query_params = parse_qs(parsed_path.query)
+
+            # Extract function name from path: /functions/{name}/callgraph
+            path_parts = parsed_path.path.split('/')
+            func_name = unquote(path_parts[2]) if len(path_parts) > 2 else None
+
+            if not func_name:
+                self._send_response({'status': 'error', 'message': 'Function name required'}, 400)
+                return
+
+            # Get depth parameter (default 1, max 10)
+            depth = min(int(query_params.get('depth', ['1'])[0]), 10)
+
+            # Find the function
+            func = self._get_function_by_name(func_name)
+            if not func:
+                self._send_response({'status': 'error', 'message': f"Function '{func_name}' not found"}, 404)
+                return
+
+            # Build call graph
+            call_graph = {
+                'name': func.name,
+                'address': func.start,
+                'callers': self._get_callers(func, depth, set()),
+                'callees': self._get_callees(func, depth, set())
+            }
+
+            self._send_response({
+                'status': 'success',
+                'call_graph': call_graph
+            })
+
+        except Exception as e:
+            logger.log_error(f"Error getting call graph: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+
     def _handle_get_global_variable_data(self):
         """Handle requests access data from a global address"""
         try:
@@ -524,6 +1406,215 @@ class LatticeRequestHandler(BaseHTTPRequestHandler):
             logger.log_error(f"Error adding comment: {e}")
             logger.log_error("Stack trace: %s" % traceback.format_exc())
             self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_create_tag(self, data):
+        """Handle requests to create a tag at an address
+
+        Expected JSON body:
+        {
+            "address": 0x401000,
+            "tag_type": "review",
+            "data": "needs review"  # optional
+        }
+        """
+        try:
+            address = data.get('address')
+            tag_type_name = data.get('tag_type')
+            tag_data = data.get('data', '')
+
+            if address is None:
+                self._send_response({'status': 'error', 'message': 'Address is required'}, 400)
+                return
+
+            if not tag_type_name:
+                self._send_response({'status': 'error', 'message': 'Tag type is required'}, 400)
+                return
+
+            # Convert address if string
+            if isinstance(address, str):
+                address = int(address, 16) if address.startswith('0x') else int(address)
+
+            bv = self.protocol.bv
+
+            # Check if address is valid/mapped
+            if not bv.is_valid_offset(address):
+                self._send_response({
+                    'status': 'error',
+                    'message': f'Cannot create tag at unmapped address 0x{address:x}'
+                }, 400)
+                return
+
+            # Ensure tag type exists (create if not)
+            if not bv.get_tag_type(tag_type_name):
+                bv.create_tag_type(tag_type_name, "⭐")
+
+            # Find function containing this address
+            funcs = bv.get_functions_containing(address)
+            if funcs:
+                # Create address tag within function context
+                # API: func.add_tag("TagType", "data", address)
+                func = funcs[0]
+                func.add_tag(tag_type_name, tag_data, address)
+                self._send_response({
+                    'status': 'success',
+                    'message': f"Tag created at 0x{address:x}",
+                    'tag': {
+                        'address': address,
+                        'type': tag_type_name,
+                        'data': tag_data,
+                        'function': func.name
+                    }
+                })
+            else:
+                # Create data tag at address (not in a function)
+                # API: bv.add_tag(address, "TagType", "data")
+                bv.add_tag(address, tag_type_name, tag_data)
+                self._send_response({
+                    'status': 'success',
+                    'message': f"Tag created at 0x{address:x}",
+                    'tag': {
+                        'address': address,
+                        'type': tag_type_name,
+                        'data': tag_data,
+                        'function': None
+                    }
+                })
+
+        except Exception as e:
+            logger.log_error(f"Error creating tag: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_get_tags(self):
+        """Handle requests to list all tags
+
+        Query parameters:
+        - type: Optional filter by tag type name
+        """
+        try:
+            parsed_path = urlparse(self.path)
+            query_params = parse_qs(parsed_path.query)
+            tag_type_filter = query_params.get('type', [None])[0]
+
+            bv = self.protocol.bv
+            tags = []
+
+            # Iterate through all tag types and get tags
+            for tag_type in bv.tag_types.values():
+                tag_type_name = tag_type.name
+                
+                # Apply filter if specified
+                if tag_type_filter and tag_type_name != tag_type_filter:
+                    continue
+                
+                # Get all tags of this type using bv.get_tags_at or iterate functions
+                # Try to get tags from each function
+                for func in bv.functions:
+                    try:
+                        # Get tags at each address in the function
+                        func_tags = bv.get_tags_in_range(func.start, func.address_ranges[0].end - func.start) if func.address_ranges else []
+                        for addr, tag_list in func_tags if isinstance(func_tags, dict) else []:
+                            for tag in (tag_list if isinstance(tag_list, list) else [tag_list]):
+                                if tag.type.name == tag_type_name:
+                                    tags.append({
+                                        'address': addr,
+                                        'type': tag_type_name,
+                                        'data': tag.data,
+                                        'function': func.name
+                                    })
+                    except Exception:
+                        pass
+
+            # Deduplicate tags by address+type
+            seen = set()
+            unique_tags = []
+            for tag in tags:
+                key = (tag['address'], tag['type'])
+                if key not in seen:
+                    seen.add(key)
+                    unique_tags.append(tag)
+
+            self._send_response({
+                'status': 'success',
+                'tags': unique_tags,
+                'count': len(unique_tags)
+            })
+
+        except Exception as e:
+            logger.log_error(f"Error getting tags: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_get_analysis_progress(self):
+        """Handle requests to get analysis progress
+
+        Returns the current analysis state, completion status, and progress percentage.
+        """
+        try:
+            bv = self.protocol.bv
+
+            # Try different ways to get analysis state
+            state_name = 'Unknown'
+            is_complete = False
+            progress = 0.5
+            
+            # Method 1: Try analysis_info.state
+            if hasattr(bv, 'analysis_info') and bv.analysis_info:
+                try:
+                    state = bv.analysis_info.state
+                    state_name = state.name if hasattr(state, 'name') else str(state)
+                except:
+                    pass
+            
+            # Method 2: Try analysis_progress directly on bv
+            if hasattr(bv, 'analysis_progress'):
+                try:
+                    ap = bv.analysis_progress
+                    if hasattr(ap, 'state'):
+                        state_name = ap.state.name if hasattr(ap.state, 'name') else str(ap.state)
+                except:
+                    pass
+            
+            # Determine if analysis is complete
+            is_complete = 'Idle' in state_name or state_name == 'IdleState'
+
+            # Estimate progress based on state
+            state_progress_map = {
+                'InitialState': 0.0,
+                'HoldState': 0.0,
+                'DisassembleState': 0.25,
+                'AnalyzeState': 0.5,
+                'ExtendedAnalyzeState': 0.75,
+                'IdleState': 1.0
+            }
+            progress = state_progress_map.get(state_name, 1.0 if is_complete else 0.5)
+
+            # Build description based on state
+            state_descriptions = {
+                'InitialState': 'Initial analysis starting',
+                'HoldState': 'Analysis on hold',
+                'IdleState': 'Analysis complete',
+                'DisassembleState': 'Disassembling binary',
+                'AnalyzeState': 'Analyzing functions',
+                'ExtendedAnalyzeState': 'Performing extended analysis'
+            }
+            description = state_descriptions.get(state_name, f'Analysis in progress ({state_name})')
+
+            self._send_response({
+                'status': 'success',
+                'state': state_name,
+                'is_complete': is_complete,
+                'progress': round(progress, 4),
+                'description': description
+            })
+
+        except Exception as e:
+            logger.log_error(f"Error getting analysis progress: {e}")
+            logger.log_error("Stack trace: %s" % traceback.format_exc())
+            self._send_response({'status': 'error', 'message': str(e)}, 500)
+
+
+
 
     def _get_function_by_name(self, name):
         """Acquire function by name instead of address"""

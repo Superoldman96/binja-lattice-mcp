@@ -24,9 +24,10 @@ logger = Logger(session_id=0, logger_name=__name__)
 
 class LatticeConfig:
     """Manages config values."""
-    def __init__(self, config_filename="config.ini"):
+    def __init__(self, config_filename="lattice_config.ini"):
         # Generate a secure API key on startup
         self.new_api_key = secrets.token_hex(16)
+        self.config_filename = config_filename
 
         self.config = configparser.ConfigParser()
         plugin_dir = os.path.dirname(os.path.realpath(__file__))
@@ -36,7 +37,7 @@ class LatticeConfig:
             try:
                 self.config.read(config_path)
             except Exception as e:
-                logger.log_error(f"Error reading config.ini: {e}")
+                logger.log_error(f"Error reading {config_filename}: {e}")
                 logger.log_error(f"Using default values")
 
     def get_host(self, default="127.0.0.1"):
@@ -47,7 +48,7 @@ class LatticeConfig:
             socket.inet_aton(ip_address)
             self.ip_address = ip_address
         except socket.error:
-            logger.log_error(f"Invalid IP Address in config.ini: {ip_address}. Falling back to default (localhost)")
+            logger.log_error(f"Invalid IP Address in {self.config_filename}: {ip_address}. Falling back to default (localhost)")
             self.ip_address = default
 
     def get_port(self, default=9000):
@@ -68,7 +69,7 @@ class LatticeConfig:
             pass
 
     def get_api_key(self):
-        """Uses the config.ini API Key if valid, otherwise, on initialization creates a new one."""
+        """Uses the configured API key if valid, otherwise creates a new one on initialization."""
         try:
             api_key_conf = self.config.get("lattice", "api_key")
             if api_key_conf:

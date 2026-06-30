@@ -404,6 +404,6 @@ if not api_key:
 
 global lattice_client
 lattice_client = Lattice()
-print(f"Authenticating with {api_key}")
-lattice_client.authenticate("mcp-user", api_key)
+if not lattice_client.authenticate("mcp-user", api_key):
+    raise RuntimeError("Failed to authenticate with BinjaLattice server")
 mcp.run(transport='stdio')

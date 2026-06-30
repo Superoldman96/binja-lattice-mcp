@@ -34,17 +34,19 @@ This will:
 
 ### Manual Installation (All Platforms)
 
-1. Copy `plugin/lattice_server_plugin.py` to your Binary Ninja plugins directory:
+1. Copy `plugin/lattice_server_plugin.py` and `plugin/lattice_config.ini` to your Binary Ninja plugins directory:
    - Linux: `~/.binaryninja/plugins/`
    - macOS: `~/Library/Application Support/Binary Ninja/plugins/`
    - Windows: `%APPDATA%\Binary Ninja\plugins\`
 
-2. Create a virtual environment:
+2. Generate a secure API key and set this as the `api_key` value within `lattice_config.ini`
+
+3. Create a virtual environment:
    ```bash
    python -m venv .venv
    ```
 
-3. Activate and install dependencies:
+4. Activate and install dependencies:
    ```bash
    # Linux/macOS
    source .venv/bin/activate

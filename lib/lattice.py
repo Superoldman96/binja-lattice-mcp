@@ -24,10 +24,26 @@ class Lattice:
         self.port = port
         self.use_ssl = use_ssl
         self.auth_token = None
+        self._auth_credentials = None
         self.base_url = f"{'https' if use_ssl else 'http'}://{host}:{port}"
         self.session = requests.Session()
         if not use_ssl:
             self.session.verify = False  # Disable SSL verification for non-SSL connections
+        self._raw_request = self.session.request
+        self.session.request = self._request_with_reauth
+
+    def _request_with_reauth(self, method: str, url: str, **kwargs):
+        """Retry protected requests once after refreshing an expired token."""
+        response = self._raw_request(method, url, **kwargs)
+        if response.status_code != 401 or not self._auth_credentials or url.endswith('/auth'):
+            return response
+
+        username, password = self._auth_credentials
+        logger.info("Authentication token rejected; requesting a fresh token")
+        if not self.authenticate(username, password):
+            return response
+
+        return self._raw_request(method, url, **kwargs)
     
     def connect(self) -> bool:
         """Connect to the server"""
@@ -58,7 +74,8 @@ class Lattice:
         Returns:
             True if authentication successful, False otherwise
         """
-        response = self.session.post(
+        response = self._raw_request(
+            'POST',
             urljoin(self.base_url, '/auth'),
             json={
                 'username': username,
@@ -67,10 +84,10 @@ class Lattice:
         )
         
         if response.status_code == 200:
-            print(response.content)
             data = json.loads(response.content)
             if data.get('status') == 'success':
                 self.auth_token = data.get('token')
+                self._auth_credentials = (username, password)
                 self.session.headers.update({'Authorization': f'Bearer {self.auth_token}'})
                 logger.info("Authentication successful")
                 return True
@@ -92,7 +109,8 @@ class Lattice:
             True if authentication successful, False otherwise
         """
         try:
-            response = self.session.post(
+            response = self._raw_request(
+                'POST',
                 urljoin(self.base_url, '/auth'),
                 json={'token': token}
             )

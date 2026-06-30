@@ -37,7 +37,7 @@ Write-Host ""
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
 $PluginSource = Join-Path $RepoRoot "plugin\lattice_server_plugin.py"
-$PluginConfigSource = Join-Path $RepoRoot "plugin\config.ini"
+$PluginConfigSource = Join-Path $RepoRoot "plugin\lattice_config.ini"
 $McpServerPath = Join-Path $RepoRoot "mcp_server.py"
 $RequirementsPath = Join-Path $RepoRoot "requirements.txt"
 $VenvPath = Join-Path $RepoRoot ".venv"
@@ -106,19 +106,19 @@ else {
 }
 Write-Host ""
 
-$PluginConfigDest = Join-Path $BNPluginsDir "config.ini"
+$PluginConfigDest = Join-Path $BNPluginsDir "lattice_config.ini"
 if (Test-Path $PluginConfigSource) {
     # Only copies if the file doesn't exist to avoid wiping user configs
     if (-not (Test-Path $PluginConfigDest)) {
         Copy-Item -Path $PluginConfigSource -Destination $PluginConfigDest
-        Write-Host "          Default config.ini created." -ForegroundColor Green
+        Write-Host "          Default lattice_config.ini created." -ForegroundColor Green
     }
     else {
-        Write-Host "          Existing config.ini found. Keeping current settings." -ForegroundColor Cyan
+        Write-Host "          Existing lattice_config.ini found. Keeping current settings." -ForegroundColor Cyan
     }
 }
 else {
-    Write-Host "          Config.ini source not found in repo. Without this file default settings will be assumed." -ForegroundColor Yellow
+    Write-Host "          lattice_config.ini source not found in repo. Without this file default settings will be assumed." -ForegroundColor Yellow
 }
 
 Write-Host ""

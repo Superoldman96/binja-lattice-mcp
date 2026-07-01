@@ -162,10 +162,10 @@ client.add_comment_to_function("function_name", "This function handles authentic
 
 ### Command Line Interface
 
-The project includes `lattice_client.py`, which provides an interactive command-line interface for testing and debugging the BinjaLattice server:
+The project includes `lattice_client.py`, which provides one-shot subcommands for testing, scripting, and debugging the BinjaLattice server:
 
 ```bash
-python lattice_client.py --host localhost --port 9000 [--ssl] --username user --password YOUR_API_KEY
+python lattice_client.py --host localhost --port 9000 --username user --password YOUR_API_KEY binary-info
 ```
 
 #### Command Line Options
@@ -173,49 +173,31 @@ python lattice_client.py --host localhost --port 9000 [--ssl] --username user --
 - `--host`: Server host (default: localhost)
 - `--port`: Server port (default: 9000)
 - `--ssl`: Enable SSL/TLS encryption
-- `--interactive`, `-i`: Run in interactive mode
 - `--username`: Username for authentication
 - `--password`: Password/API key for authentication
 - `--token`: Authentication token (if you have one from previous authentication)
 
-#### Interactive Mode
+Run `python lattice_client.py --help` to list all commands, and `python lattice_client.py <command> --help` for command-specific arguments.
 
-The interactive mode provides a menu-driven interface with the following options:
+#### Commands
 
-1. Get Binary Information
-2. Get Function Context by Address
-3. Get Function Context by Name
-4. Update Function Name
-5. Update Variable Name
-6. Add Comment to Function
-7. Add Comment to Address
-8. Reconnect to Server
-9. Get All Function Names
-10. Get Function Disassembly
-11. Get Function Pseudocode
-12. Get Function Variables
-13. Get Cross References to Function
-14. Exit
-
-Example usage with interactive mode:
-
-```bash
-python lattice_client.py -i --ssl --username user --password YOUR_API_KEY
-```
-
-#### Non-Interactive Commands
-
-You can also use the client to execute single commands:
+Use the client to execute single subcommands:
 
 ```bash
 # Get binary information
-python lattice_client.py --username user --password YOUR_API_KEY --get-binary-info
+python lattice_client.py --username user --password YOUR_API_KEY binary-info
 
 # Get function disassembly
-python lattice_client.py --username user --password YOUR_API_KEY --get-function-disassembly "main"
+python lattice_client.py --username user --password YOUR_API_KEY disassembly "main"
 
 # Add comment to a function
-python lattice_client.py --username user --password YOUR_API_KEY --add-comment-to-function "main" "Entry point of the program"
+python lattice_client.py --username user --password YOUR_API_KEY comment-function "main" "Entry point of the program"
+
+# Search for bytes
+python lattice_client.py --username user --password YOUR_API_KEY search-bytes "48 89 ?? 24" --max-results 20
+
+# Create a struct
+python lattice_client.py --username user --password YOUR_API_KEY create-struct MyStruct '[{"name":"field1","type":"uint32_t"}]'
 ```
 
 ### Security Notes
@@ -238,7 +220,8 @@ To add new functionality:
 
 1. Add new endpoint handlers in `LatticeRequestHandler` class in `lattice_server_plugin.py`
 2. Add corresponding client methods in `Lattice` class in `lib/lattice.py`
-3. Add new MCP tools in `mcp_server.py`
+3. Add the command to `lattice_client.py`
+4. Add new MCP tools in `mcp_server.py`
 
 ### Running Tests
 
